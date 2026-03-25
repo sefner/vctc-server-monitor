@@ -1,9 +1,9 @@
 # VCTC Server Monitor Agent
-# Schedule this as a Windows Scheduled Task to run every 30 minutes.
+# Schedule as a Windows Scheduled Task every 30 minutes.
 # Task Action: powershell.exe -ExecutionPolicy Bypass -File "C:\Scripts\vctc-agent.ps1"
 
-$API_URL  = "https://YOUR-SERVER/api/checkin"   # Replace with your server URL
-$API_KEY  = "YOUR_API_KEY_HERE"                  # Replace with the key from server registration
+$API_URL = "https://YOUR-SERVER/api/checkin"  # Replace with your server URL
+$API_KEY = "YOUR_API_KEY_HERE"                 # Replace with the key from server registration
 
 # ── OS Info ───────────────────────────────────────────────────────────────────
 $os = Get-CimInstance Win32_OperatingSystem
@@ -15,26 +15,28 @@ $disks = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null -
     $total = $_.Used + $_.Free
     $usedPct = if ($total -gt 0) { [math]::Round(($_.Used / $total) * 100, 1) } else { 0 }
     @{
-        drive     = $_.Root
-        total_gb  = [math]::Round($total / 1GB, 2)
-        free_gb   = [math]::Round($_.Free / 1GB, 2)
-        used_pct  = $usedPct
+        drive    = $_.Root
+        total_gb = [math]::Round($total / 1GB, 2)
+        free_gb  = [math]::Round($_.Free / 1GB, 2)
+        used_pct = $usedPct
     }
 }
 
 # ── Windows Updates ───────────────────────────────────────────────────────────
-$pendingUpdates = 0
+$pendingUpdates = $null
 $lastUpdateInstalled = $null
 try {
-    $updateSession = New-Object -ComObject Microsoft.Update.Session
+    $updateSession  = New-Object -ComObject Microsoft.Update.Session
     $updateSearcher = $updateSession.CreateUpdateSearcher()
-    $searchResult = $updateSearcher.Search("IsInstalled=0 and Type='Software'")
+    $searchResult   = $updateSearcher.Search("IsInstalled=0 and Type='Software'")
     $pendingUpdates = $searchResult.Updates.Count
 
-    # Last installed update
     $historyCount = $updateSearcher.GetTotalHistoryCount()
     if ($historyCount -gt 0) {
-        $history = $updateSearcher.QueryHistory(0, [math]::Min($historyCount, 20)) | Where-Object { $_.ResultCode -eq 2 } | Sort-Object Date -Descending | Select-Object -First 1
+        $history = $updateSearcher.QueryHistory(0, [math]::Min($historyCount, 20)) |
+            Where-Object { $_.ResultCode -eq 2 } |
+            Sort-Object Date -Descending |
+            Select-Object -First 1
         if ($history) { $lastUpdateInstalled = $history.Date.ToString("yyyy-MM-ddTHH:mm:ss") }
     }
 } catch {
@@ -42,14 +44,13 @@ try {
 }
 
 # ── Services to Monitor ───────────────────────────────────────────────────────
-# Add any service names you want to monitor here
+# Add or remove service names as needed for each server
 $serviceNames = @(
-    "wuauserv",      # Windows Update
-    "W32Time",       # Windows Time
-    "Dnscache",      # DNS Client
-    "LanmanServer",  # Server (file sharing)
-    "WinRM"          # Windows Remote Management
-    # Add your own: "SQLServer", "MSSQLSERVER", etc.
+    "wuauserv",     # Windows Update
+    "W32Time",      # Windows Time
+    "Dnscache",     # DNS Client
+    "LanmanServer", # Server (file sharing)
+    "WinRM"         # Windows Remote Management
 )
 
 $services = $serviceNames | ForEach-Object {
@@ -63,24 +64,59 @@ $services = $serviceNames | ForEach-Object {
     }
 } | Where-Object { $_ -ne $null }
 
-# ── Veeam Backup ──────────────────────────────────────────────────────────────
-$veeamJob = $null
+# ── CloudBerry Backup Status ───────────────────────────────────────────────────
+# Queries the local CloudBerry SQLite database for recent backup session results.
+# result codes: 6 = Success, 2 = Failed, 3 = Warning
+$cloudberryJobs = @()
 try {
-    if (Get-Module -ListAvailable -Name Veeam.Backup.PowerShell) {
-        Import-Module Veeam.Backup.PowerShell -ErrorAction Stop
-        $lastSession = Get-VBRBackupSession | Sort-Object EndTime -Descending | Select-Object -First 1
-        if ($lastSession) {
-            $veeamJob = @{
-                job_name         = $lastSession.JobName
-                status           = $lastSession.Result.ToString()
-                end_time         = $lastSession.EndTime.ToString("yyyy-MM-ddTHH:mm:ss")
-                size_gb          = [math]::Round($lastSession.BackupStats.DataSize / 1GB, 2)
-                duration_seconds = [int]($lastSession.EndTime - $lastSession.CreationTime).TotalSeconds
+    $cbDb  = "C:\ProgramData\CloudBerryLab\CloudBerry Backup\data\cbbackup.db"
+    $cbDll = "C:\Program Files\CloudBerryLab\CloudBerry Backup\System.Data.SQLite.dll"
+
+    if ((Test-Path $cbDb) -and (Test-Path $cbDll)) {
+        Add-Type -Path $cbDll -ErrorAction Stop
+
+        $conn = New-Object System.Data.SQLite.SQLiteConnection("Data Source=$cbDb;Version=3;Read Only=True;")
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        # Get the most recent session per plan
+        $cmd.CommandText = @"
+            SELECT plan_name, result, date_start_utc, duration, total_size, error_message
+            FROM session_history
+            WHERE id IN (
+                SELECT MAX(id) FROM session_history GROUP BY plan_name
+            )
+            ORDER BY date_start_utc DESC
+"@
+        $reader = $cmd.ExecuteReader()
+        while ($reader.Read()) {
+            $dateRaw = $reader["date_start_utc"].ToString()
+            # Parse YYYYMMDDHHmmss format
+            $dateStr = $null
+            if ($dateRaw.Length -eq 14) {
+                $dateStr = "$($dateRaw.Substring(0,4))-$($dateRaw.Substring(4,2))-$($dateRaw.Substring(6,2))T$($dateRaw.Substring(8,2)):$($dateRaw.Substring(10,2)):$($dateRaw.Substring(12,2))Z"
+            }
+            $resultCode = [int]$reader["result"]
+            $resultText = switch ($resultCode) {
+                6 { "Success" }
+                2 { "Failed" }
+                3 { "Warning" }
+                default { "Unknown ($resultCode)" }
+            }
+            $cloudberryJobs += @{
+                plan_name        = $reader["plan_name"].ToString()
+                status           = $resultText
+                date_start_utc   = $dateStr
+                duration_seconds = [int]$reader["duration"]
+                total_size_bytes = [long]$reader["total_size"]
+                error_message    = $reader["error_message"].ToString()
             }
         }
+        $reader.Close()
+        $conn.Close()
     }
 } catch {
-    Write-Warning "Could not query Veeam: $_"
+    Write-Warning "Could not query CloudBerry backup DB: $_"
 }
 
 # ── Build Payload ─────────────────────────────────────────────────────────────
@@ -90,8 +126,8 @@ $payload = @{
     disks                 = $disks
     pending_updates       = $pendingUpdates
     last_update_installed = $lastUpdateInstalled
-    services              = $services
-    veeam_last_job        = $veeamJob
+    services              = @($services)
+    cloudberry_jobs       = $cloudberryJobs
 } | ConvertTo-Json -Depth 5
 
 # ── Send to API ───────────────────────────────────────────────────────────────

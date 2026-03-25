@@ -15,11 +15,13 @@ interface Service {
     status: string;
 }
 
-interface VeeamJob {
-    job_name: string;
+interface CloudBerryJob {
+    plan_name: string;
     status: string;
-    end_time: string | null;
-    size_gb: number | null;
+    date_start_utc: string | null;
+    duration_seconds: number | null;
+    total_size_bytes: number | null;
+    error_message: string | null;
 }
 
 interface Server {
@@ -33,7 +35,7 @@ interface Server {
     pending_updates: number | null;
     last_update_installed: string | null;
     services: Service[];
-    veeam_last_job: VeeamJob | null;
+    cloudberry_jobs: CloudBerryJob[] | null;
     uptime_seconds: number | null;
 }
 
@@ -44,6 +46,14 @@ interface BackupStatus {
     last_run_at: string | null;
     status: string | null;
     size_bytes: number | null;
+}
+
+function fmtBytes(bytes: number | null): string {
+    if (!bytes) return '—';
+    if (bytes > 1e12) return `${(bytes / 1e12).toFixed(1)} TB`;
+    if (bytes > 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+    if (bytes > 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+    return `${bytes} B`;
 }
 
 function timeAgo(iso: string | null): string {
@@ -71,7 +81,7 @@ function serverStatus(server: Server): 'online' | 'warning' | 'offline' {
         (server.disks || []).some(d => d.used_pct > 85) ||
         (server.pending_updates ?? 0) > 20 ||
         (server.services || []).some(s => s.status !== 'Running') ||
-        server.veeam_last_job?.status === 'Failed';
+        (server.cloudberry_jobs || []).some(j => j.status === 'Failed');
     return hasIssue ? 'warning' : 'online';
 }
 
@@ -160,20 +170,28 @@ function ServerCard({ server, backups }: { server: Server; backups: BackupStatus
                     </div>
                 </div>
 
-                {server.veeam_last_job && (
+                {(server.cloudberry_jobs || []).length > 0 && (
                     <div>
-                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Veeam Backup</div>
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-600 truncate max-w-[160px]">{server.veeam_last_job.job_name}</span>
-                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                                server.veeam_last_job.status === 'Success' ? 'bg-green-100 text-green-700' :
-                                server.veeam_last_job.status === 'Warning' ? 'bg-amber-100 text-amber-700' :
-                                'bg-red-100 text-red-700'
-                            }`}>{server.veeam_last_job.status}</span>
-                        </div>
-                        {server.veeam_last_job.end_time && (
-                            <div className="text-xs text-gray-400 mt-0.5">{timeAgo(server.veeam_last_job.end_time)}</div>
-                        )}
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">CloudBerry Backup</div>
+                        {(server.cloudberry_jobs || []).map((job, i) => (
+                            <div key={i} className="mb-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs text-gray-600 truncate max-w-[160px]">{job.plan_name}</span>
+                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                        job.status === 'Success' ? 'bg-green-100 text-green-700' :
+                                        job.status === 'Warning' ? 'bg-amber-100 text-amber-700' :
+                                        'bg-red-100 text-red-700'
+                                    }`}>{job.status}</span>
+                                </div>
+                                <div className="text-xs text-gray-400 mt-0.5">
+                                    {job.date_start_utc ? timeAgo(job.date_start_utc) : '—'}
+                                    {job.total_size_bytes ? ` · ${fmtBytes(job.total_size_bytes)}` : ''}
+                                </div>
+                                {job.error_message && (
+                                    <div className="text-xs text-red-600 mt-0.5 truncate">{job.error_message}</div>
+                                )}
+                            </div>
+                        ))}
                     </div>
                 )}
 

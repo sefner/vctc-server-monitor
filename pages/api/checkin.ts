@@ -13,11 +13,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
     const {
         os_info,
-        disks,           // [{ drive, total_gb, free_gb, used_pct }]
+        disks,                // [{ drive, total_gb, free_gb, used_pct }]
         pending_updates,
         last_update_installed,
-        services,        // [{ name, status, display_name }]
-        veeam_last_job,  // { job_name, status, end_time, size_gb, duration_seconds }
+        services,             // [{ name, display_name, status }]
+        cloudberry_jobs,      // [{ plan_name, status, date_start_utc, duration_seconds, total_size_bytes, error_message }]
         uptime_seconds,
     } = req.body;
 
@@ -32,7 +32,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         pending_updates ?? null,
         last_update_installed || null,
         services ? JSON.stringify(services) : null,
-        veeam_last_job ? JSON.stringify(veeam_last_job) : null,
+        cloudberry_jobs ? JSON.stringify(cloudberry_jobs) : null,
         uptime_seconds ?? null,
     );
 

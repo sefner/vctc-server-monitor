@@ -36,7 +36,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             ...s,
             disks: s.disks ? JSON.parse(s.disks) : [],
             services: s.services ? JSON.parse(s.services) : [],
-            veeam_last_job: s.veeam_last_job ? JSON.parse(s.veeam_last_job) : null,
+            cloudberry_jobs: s.veeam_last_job ? JSON.parse(s.veeam_last_job) : [],
         }));
 
         return res.status(200).json(parsed);
